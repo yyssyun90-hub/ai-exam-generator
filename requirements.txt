@@ -1,3 +1,5 @@
 streamlit
 openai
 python-docx
+PyPDF2
+matplotlib
