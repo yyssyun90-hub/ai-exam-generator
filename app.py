@@ -1,5 +1,6 @@
 import streamlit as st
 import openai
+from openai import OpenAI
 import json
 from docx import Document
 from docx.shared import Pt, Inches
@@ -34,7 +35,7 @@ st.title("📝 AI 智能出卷助手")
 st.caption("上传参考试卷和教学计划，AI学习风格后自动生成指定单元范围的试卷")
 
 
-# ========== 辅助函数（先定义，后使用） ==========
+# ========== 辅助函数 ==========
 
 def read_docx_content(file):
     doc = Document(file)
@@ -82,7 +83,7 @@ def get_remaining_calls():
     return 50 - st.session_state.today_calls
 
 
-def extract_units_from_syllabus(syllabus_content, api_key):
+def extract_units_from_syllabus(syllabus_content, client):
     prompt = f"""
 请从以下教学计划中提取所有的单元/章节名称。
 
@@ -96,7 +97,7 @@ def extract_units_from_syllabus(syllabus_content, api_key):
 """
     
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "你是教学计划分析专家，只输出JSON数组。"},
@@ -111,7 +112,7 @@ def extract_units_from_syllabus(syllabus_content, api_key):
         return ["第1单元", "第2单元", "第3单元", "第4单元", "第5单元", "第6单元"]
 
 
-def analyze_paper_style(reference_files, api_key):
+def analyze_paper_style(reference_files, client):
     papers_content = []
     for file in reference_files:
         if file.name.endswith('.pdf'):
@@ -151,7 +152,7 @@ def analyze_paper_style(reference_files, api_key):
 """
     
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "你是试卷分析专家，只输出JSON。"},
@@ -166,8 +167,8 @@ def analyze_paper_style(reference_files, api_key):
 
 
 def generate_paper(style, grade, subject, paper_type, difficulty, extra_requirements, 
-                   syllabus_content, selected_units, api_key, auto_draw=True):
-    if not api_key:
+                   syllabus_content, selected_units, client, auto_draw=True):
+    if not client:
         return {"error": "API Key未配置"}
     
     style_str = json.dumps(style, ensure_ascii=False)
@@ -264,7 +265,7 @@ def generate_paper(style, grade, subject, paper_type, difficulty, extra_requirem
 """
     
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "你是小学试卷出题专家，只输出JSON。"},
@@ -459,15 +460,19 @@ def create_word_document(paper_json, with_answers=False, auto_draw=True):
     return buffer
 
 
-# ========== 获取 API Key ==========
+# ========== 主界面 UI ==========
 
+# 侧边栏配置
 with st.sidebar:
     st.header("🔐 配置")
     
     if "GITHUB_TOKEN" in st.secrets:
         api_key = st.secrets["GITHUB_TOKEN"]
-        openai.api_key = api_key
-        openai.base_url = "https://models.inference.ai.azure.com"
+        # 创建新版 OpenAI 客户端
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://models.inference.ai.azure.com"
+        )
         st.success("✅ GitHub Models API已配置")
         
         st.divider()
@@ -485,6 +490,7 @@ with st.sidebar:
             st.warning(f"⚠️ 剩余次数不足 {remaining} 次")
     else:
         st.warning("⚠️ 请在Streamlit Secrets中设置 GITHUB_TOKEN")
+        client = None
         api_key = None
     
     st.divider()
@@ -493,8 +499,7 @@ with st.sidebar:
     st.info("复杂场景图片会生成【图X：描述】占位符")
 
 
-# ========== 主界面 UI ==========
-
+# 三个标签页
 tab1, tab2, tab3 = st.tabs(["📚 上传资料", "🎯 出卷设置", "📄 生成试卷"])
 
 with tab1:
@@ -515,7 +520,7 @@ with tab1:
     )
     
     if syllabus_file and st.button("📖 解析教学计划，提取单元列表"):
-        if not api_key:
+        if not client:
             st.error("请先配置 API Key")
         else:
             with st.spinner("正在解析教学计划..."):
@@ -523,7 +528,7 @@ with tab1:
                 st.session_state.syllabus_content = syllabus_content
                 
                 track_api_call()
-                units = extract_units_from_syllabus(syllabus_content, api_key)
+                units = extract_units_from_syllabus(syllabus_content, client)
                 st.session_state.syllabus_units = units
                 
                 st.success(f"成功提取 {len(units)} 个单元")
@@ -590,14 +595,14 @@ with tab2:
     )
     
     if reference_papers and st.button("🔍 分析试卷风格", type="secondary"):
-        if not api_key:
+        if not client:
             st.error("请先配置 API Key")
         elif get_remaining_calls() <= 0:
             st.error("❌ 今日免费额度已用完，请明天再试")
         else:
             with st.spinner("AI正在分析试卷风格..."):
                 track_api_call()
-                style_analysis = analyze_paper_style(reference_papers, api_key)
+                style_analysis = analyze_paper_style(reference_papers, client)
                 st.session_state.analyzed_style = style_analysis
                 st.success("风格分析完成！")
                 with st.expander("查看分析结果"):
@@ -630,7 +635,7 @@ with tab3:
                         extra_requirements=extra_requirements,
                         syllabus_content=st.session_state.syllabus_content,
                         selected_units=st.session_state.selected_units,
-                        api_key=api_key,
+                        client=client,
                         auto_draw=auto_draw
                     )
                     st.session_state.paper_json = paper
