@@ -34,255 +34,7 @@ st.title("📝 AI 智能出卷助手")
 st.caption("上传参考试卷和教学计划，AI学习风格后自动生成指定单元范围的试卷")
 
 
-def track_api_call():
-    """记录API调用次数，每天自动重置"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    if st.session_state.last_reset_date != today:
-        st.session_state.last_reset_date = today
-        st.session_state.today_calls = 0
-    st.session_state.today_calls += 1
-
-
-def get_remaining_calls():
-    """获取剩余调用次数"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    if st.session_state.last_reset_date != today:
-        st.session_state.last_reset_date = today
-        st.session_state.today_calls = 0
-    return 50 - st.session_state.today_calls
-
-
-# 侧边栏
-with st.sidebar:
-    st.header("🔐 配置")
-    
-    if "GITHUB_TOKEN" in st.secrets:
-        api_key = st.secrets["GITHUB_TOKEN"]
-        openai.api_key = api_key
-        openai.base_url = "https://models.inference.ai.azure.com"
-        st.success("✅ GitHub Models API已配置")
-        
-        st.divider()
-        st.header("📊 额度")
-        
-        remaining = get_remaining_calls()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("今日已用", f"{st.session_state.today_calls} 次")
-        with col2:
-            st.metric("剩余", f"{remaining} 次")
-        st.progress(min(st.session_state.today_calls / 50, 1.0))
-        
-        if remaining < 10:
-            st.warning(f"⚠️ 剩余次数不足 {remaining} 次")
-    else:
-        st.warning("⚠️ 请在Streamlit Secrets中设置 GITHUB_TOKEN")
-        api_key = None
-    
-    st.divider()
-    st.header("🎨 图片设置")
-    auto_draw = st.checkbox("自动生成图形", value=True)
-    st.info("复杂场景图片会生成【图X：描述】占位符")
-
-# 主界面 - 三个标签页
-tab1, tab2, tab3 = st.tabs(["📚 上传资料", "🎯 出卷设置", "📄 生成试卷"])
-
-with tab1:
-    st.subheader("📖 上传参考试卷")
-    
-    reference_papers = st.file_uploader(
-        "上传之前的试卷（支持Word和PDF）",
-        type=["docx", "pdf"],
-        accept_multiple_files=True,
-        help="上传2-3份，AI会学习题型、分值、语言风格"
-    )
-    
-    st.subheader("📅 上传全年教学计划")
-    syllabus_file = st.file_uploader(
-        "上传教学计划（Word格式）",
-        type=["docx"],
-        help="AI会根据教学计划判断每个单元学什么"
-    )
-    
-    if syllabus_file and st.button("📖 解析教学计划，提取单元列表"):
-        if not api_key:
-            st.error("请先配置 API Key")
-        else:
-            with st.spinner("正在解析教学计划..."):
-                syllabus_content = read_docx_content(syllabus_file)
-                st.session_state.syllabus_content = syllabus_content
-                
-                track_api_call()
-                units = extract_units_from_syllabus(syllabus_content, api_key)
-                st.session_state.syllabus_units = units
-                
-                st.success(f"成功提取 {len(units)} 个单元")
-                with st.expander("查看单元列表"):
-                    for i, unit in enumerate(units, 1):
-                        st.write(f"{i}. {unit}")
-    
-    if reference_papers:
-        st.success(f"已上传 {len(reference_papers)} 份参考试卷")
-
-with tab2:
-    st.subheader("🎯 出卷参数")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        grade_level = st.selectbox(
-            "年级",
-            ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"]
-        )
-        subject = st.selectbox("科目", ["华文", "数学", "健康教育"])
-    
-    with col2:
-        paper_type = st.selectbox("试卷类型", ["单元测验", "期中考试", "期末考试", "模拟练习"])
-        difficulty = st.select_slider("难度", ["简单", "中等偏易", "中等", "中等偏难", "难"], value="中等")
-    
-    st.subheader("📚 出题范围（基于教学计划）")
-    
-    if st.session_state.syllabus_units:
-        st.write("请勾选要出题的单元：")
-        
-        col_all1, col_all2 = st.columns(2)
-        with col_all1:
-            if st.button("✅ 全选"):
-                for unit in st.session_state.syllabus_units:
-                    st.session_state[f"unit_selected_{unit}"] = True
-        with col_all2:
-            if st.button("❌ 清空"):
-                for unit in st.session_state.syllabus_units:
-                    st.session_state[f"unit_selected_{unit}"] = False
-        
-        selected_units = []
-        for unit in st.session_state.syllabus_units:
-            key = f"unit_selected_{unit}"
-            if key not in st.session_state:
-                st.session_state[key] = True
-            if st.checkbox(unit, key=key):
-                selected_units.append(unit)
-        
-        st.session_state.selected_units = selected_units
-        
-        if selected_units:
-            st.success(f"已选择 {len(selected_units)} 个单元")
-        else:
-            st.warning("请至少选择一个单元")
-    else:
-        st.info("请先在「上传资料」标签页上传教学计划并点击「解析教学计划」")
-        st.session_state.selected_units = []
-    
-    st.subheader("📋 额外要求")
-    extra_requirements = st.text_area(
-        "特殊要求",
-        placeholder="例如：多出应用题、重点考察计算能力、多出看图写话题...",
-        height=100
-    )
-    
-    if reference_papers and st.button("🔍 分析试卷风格", type="secondary"):
-        if not api_key:
-            st.error("请先配置 API Key")
-        elif get_remaining_calls() <= 0:
-            st.error("❌ 今日额度已用完，请明天再试")
-        else:
-            with st.spinner("AI正在分析试卷风格..."):
-                track_api_call()
-                style_analysis = analyze_paper_style(reference_papers, api_key)
-                st.session_state.analyzed_style = style_analysis
-                st.success("风格分析完成！")
-                with st.expander("查看分析结果"):
-                    st.json(style_analysis)
-
-with tab3:
-    if not st.session_state.analyzed_style:
-        st.info("请先在「上传资料」标签页上传参考试卷，并点击「分析试卷风格」")
-    elif not st.session_state.selected_units:
-        st.info("请先在「出卷设置」标签页选择出题单元范围")
-    else:
-        st.subheader("🚀 生成新试卷")
-        st.write(f"**出题范围：** {', '.join(st.session_state.selected_units)}")
-        st.write(f"**学习风格来源：** {len(reference_papers) if reference_papers else 0} 份参考试卷")
-        
-        if st.button("📝 生成试卷", type="primary", use_container_width=True):
-            if get_remaining_calls() <= 0:
-                st.error("❌ 今日额度已用完，请明天再试")
-            elif not reference_papers:
-                st.error("请先上传参考试卷")
-            else:
-                with st.spinner("AI正在生成试卷..."):
-                    track_api_call()
-                    paper = generate_paper(
-                        style=st.session_state.analyzed_style,
-                        grade=grade_level,
-                        subject=subject,
-                        paper_type=paper_type,
-                        difficulty=difficulty,
-                        extra_requirements=extra_requirements,
-                        syllabus_content=st.session_state.syllabus_content,
-                        selected_units=st.session_state.selected_units,
-                        api_key=api_key,
-                        auto_draw=auto_draw
-                    )
-                    st.session_state.paper_json = paper
-                    st.success("试卷生成成功！")
-    
-    if st.session_state.paper_json:
-        st.divider()
-        st.subheader("📄 试卷预览")
-        
-        paper = st.session_state.paper_json
-        
-        if "error" in paper:
-            st.error(f"生成失败：{paper['error']}")
-        else:
-            st.markdown(f"### {paper.get('title', '试卷')}")
-            st.markdown(f"**总分：{paper.get('total_score', 100)}分**")
-            st.markdown("---")
-            
-            for section in paper.get('sections', []):
-                st.markdown(f"#### {section.get('type', '')}（每题{section.get('score_per_question', 0)}分）")
-                for q in section.get('questions', []):
-                    st.markdown(f"**{q.get('number', '')}.** {q.get('text', '')}")
-                    if q.get('image_marker'):
-                        st.info(f"🖼️ {q['image_marker']}")
-                    if 'options' in q and q['options']:
-                        for opt in q['options']:
-                            st.markdown(f"&nbsp;&nbsp;&nbsp;{opt}")
-                    st.markdown("")
-                st.markdown("---")
-            
-            col_dl1, col_dl2 = st.columns(2)
-            with col_dl1:
-                if st.button("📥 下载学生卷"):
-                    doc_buffer = create_word_document(
-                        st.session_state.paper_json, 
-                        with_answers=False,
-                        auto_draw=auto_draw
-                    )
-                    st.download_button(
-                        label="点击下载",
-                        data=doc_buffer,
-                        file_name=f"{grade_level}{subject}{paper_type}_学生卷.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        key="download_student"
-                    )
-            with col_dl2:
-                if st.button("📥 下载教师卷（含答案）"):
-                    doc_buffer = create_word_document(
-                        st.session_state.paper_json, 
-                        with_answers=True,
-                        auto_draw=auto_draw
-                    )
-                    st.download_button(
-                        label="点击下载",
-                        data=doc_buffer,
-                        file_name=f"{grade_level}{subject}{paper_type}_教师卷.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        key="download_teacher"
-                    )
-
-
-# ========== 函数定义 ==========
+# ========== 辅助函数（先定义，后使用） ==========
 
 def read_docx_content(file):
     doc = Document(file)
@@ -296,6 +48,7 @@ def read_pdf_content(file):
     text = ""
     try:
         import pdfplumber
+        file.seek(0)
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
@@ -311,6 +64,22 @@ def read_pdf_content(file):
         except:
             pass
     return text
+
+
+def track_api_call():
+    today = datetime.now().strftime("%Y-%m-%d")
+    if st.session_state.last_reset_date != today:
+        st.session_state.last_reset_date = today
+        st.session_state.today_calls = 0
+    st.session_state.today_calls += 1
+
+
+def get_remaining_calls():
+    today = datetime.now().strftime("%Y-%m-%d")
+    if st.session_state.last_reset_date != today:
+        st.session_state.last_reset_date = today
+        st.session_state.today_calls = 0
+    return 50 - st.session_state.today_calls
 
 
 def extract_units_from_syllabus(syllabus_content, api_key):
@@ -688,3 +457,236 @@ def create_word_document(paper_json, with_answers=False, auto_draw=True):
     doc.save(buffer)
     buffer.seek(0)
     return buffer
+
+
+# ========== 获取 API Key ==========
+
+with st.sidebar:
+    st.header("🔐 配置")
+    
+    if "GITHUB_TOKEN" in st.secrets:
+        api_key = st.secrets["GITHUB_TOKEN"]
+        openai.api_key = api_key
+        openai.base_url = "https://models.inference.ai.azure.com"
+        st.success("✅ GitHub Models API已配置")
+        
+        st.divider()
+        st.header("📊 免费额度")
+        
+        remaining = get_remaining_calls()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("今日已用", f"{st.session_state.today_calls} 次")
+        with col2:
+            st.metric("剩余", f"{remaining} 次")
+        st.progress(min(st.session_state.today_calls / 50, 1.0))
+        
+        if remaining < 10:
+            st.warning(f"⚠️ 剩余次数不足 {remaining} 次")
+    else:
+        st.warning("⚠️ 请在Streamlit Secrets中设置 GITHUB_TOKEN")
+        api_key = None
+    
+    st.divider()
+    st.header("🎨 图片设置")
+    auto_draw = st.checkbox("自动生成图形", value=True)
+    st.info("复杂场景图片会生成【图X：描述】占位符")
+
+
+# ========== 主界面 UI ==========
+
+tab1, tab2, tab3 = st.tabs(["📚 上传资料", "🎯 出卷设置", "📄 生成试卷"])
+
+with tab1:
+    st.subheader("📖 上传参考试卷")
+    
+    reference_papers = st.file_uploader(
+        "上传之前的试卷（支持Word和PDF）",
+        type=["docx", "pdf"],
+        accept_multiple_files=True,
+        help="上传2-3份，AI会学习题型、分值、语言风格"
+    )
+    
+    st.subheader("📅 上传全年教学计划")
+    syllabus_file = st.file_uploader(
+        "上传教学计划（Word格式）",
+        type=["docx"],
+        help="AI会根据教学计划判断每个单元学什么"
+    )
+    
+    if syllabus_file and st.button("📖 解析教学计划，提取单元列表"):
+        if not api_key:
+            st.error("请先配置 API Key")
+        else:
+            with st.spinner("正在解析教学计划..."):
+                syllabus_content = read_docx_content(syllabus_file)
+                st.session_state.syllabus_content = syllabus_content
+                
+                track_api_call()
+                units = extract_units_from_syllabus(syllabus_content, api_key)
+                st.session_state.syllabus_units = units
+                
+                st.success(f"成功提取 {len(units)} 个单元")
+                with st.expander("查看单元列表"):
+                    for i, unit in enumerate(units, 1):
+                        st.write(f"{i}. {unit}")
+    
+    if reference_papers:
+        st.success(f"已上传 {len(reference_papers)} 份参考试卷")
+
+with tab2:
+    st.subheader("🎯 出卷参数")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        grade_level = st.selectbox(
+            "年级",
+            ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"]
+        )
+        subject = st.selectbox("科目", ["华文", "数学", "健康教育"])
+    
+    with col2:
+        paper_type = st.selectbox("试卷类型", ["单元测验", "期中考试", "期末考试", "模拟练习"])
+        difficulty = st.select_slider("难度", ["简单", "中等偏易", "中等", "中等偏难", "难"], value="中等")
+    
+    st.subheader("📚 出题范围（基于教学计划）")
+    
+    if st.session_state.syllabus_units:
+        st.write("请勾选要出题的单元：")
+        
+        col_all1, col_all2 = st.columns(2)
+        with col_all1:
+            if st.button("✅ 全选"):
+                for unit in st.session_state.syllabus_units:
+                    st.session_state[f"unit_selected_{unit}"] = True
+        with col_all2:
+            if st.button("❌ 清空"):
+                for unit in st.session_state.syllabus_units:
+                    st.session_state[f"unit_selected_{unit}"] = False
+        
+        selected_units = []
+        for unit in st.session_state.syllabus_units:
+            key = f"unit_selected_{unit}"
+            if key not in st.session_state:
+                st.session_state[key] = True
+            if st.checkbox(unit, key=key):
+                selected_units.append(unit)
+        
+        st.session_state.selected_units = selected_units
+        
+        if selected_units:
+            st.success(f"已选择 {len(selected_units)} 个单元")
+        else:
+            st.warning("请至少选择一个单元")
+    else:
+        st.info("请先在「上传资料」标签页上传教学计划并点击「解析教学计划」")
+        st.session_state.selected_units = []
+    
+    st.subheader("📋 额外要求")
+    extra_requirements = st.text_area(
+        "特殊要求",
+        placeholder="例如：多出应用题、重点考察计算能力、多出看图写话题...",
+        height=100
+    )
+    
+    if reference_papers and st.button("🔍 分析试卷风格", type="secondary"):
+        if not api_key:
+            st.error("请先配置 API Key")
+        elif get_remaining_calls() <= 0:
+            st.error("❌ 今日免费额度已用完，请明天再试")
+        else:
+            with st.spinner("AI正在分析试卷风格..."):
+                track_api_call()
+                style_analysis = analyze_paper_style(reference_papers, api_key)
+                st.session_state.analyzed_style = style_analysis
+                st.success("风格分析完成！")
+                with st.expander("查看分析结果"):
+                    st.json(style_analysis)
+
+with tab3:
+    if not st.session_state.analyzed_style:
+        st.info("请先在「上传资料」标签页上传参考试卷，并点击「分析试卷风格」")
+    elif not st.session_state.selected_units:
+        st.info("请先在「出卷设置」标签页选择出题单元范围")
+    else:
+        st.subheader("🚀 生成新试卷")
+        st.write(f"**出题范围：** {', '.join(st.session_state.selected_units)}")
+        st.write(f"**学习风格来源：** {len(reference_papers) if reference_papers else 0} 份参考试卷")
+        
+        if st.button("📝 生成试卷", type="primary", use_container_width=True):
+            if get_remaining_calls() <= 0:
+                st.error("❌ 今日免费额度已用完，请明天再试")
+            elif not reference_papers:
+                st.error("请先上传参考试卷")
+            else:
+                with st.spinner("AI正在生成试卷..."):
+                    track_api_call()
+                    paper = generate_paper(
+                        style=st.session_state.analyzed_style,
+                        grade=grade_level,
+                        subject=subject,
+                        paper_type=paper_type,
+                        difficulty=difficulty,
+                        extra_requirements=extra_requirements,
+                        syllabus_content=st.session_state.syllabus_content,
+                        selected_units=st.session_state.selected_units,
+                        api_key=api_key,
+                        auto_draw=auto_draw
+                    )
+                    st.session_state.paper_json = paper
+                    st.success("试卷生成成功！")
+    
+    if st.session_state.paper_json:
+        st.divider()
+        st.subheader("📄 试卷预览")
+        
+        paper = st.session_state.paper_json
+        
+        if "error" in paper:
+            st.error(f"生成失败：{paper['error']}")
+        else:
+            st.markdown(f"### {paper.get('title', '试卷')}")
+            st.markdown(f"**总分：{paper.get('total_score', 100)}分**")
+            st.markdown("---")
+            
+            for section in paper.get('sections', []):
+                st.markdown(f"#### {section.get('type', '')}（每题{section.get('score_per_question', 0)}分）")
+                for q in section.get('questions', []):
+                    st.markdown(f"**{q.get('number', '')}.** {q.get('text', '')}")
+                    if q.get('image_marker'):
+                        st.info(f"🖼️ {q['image_marker']}")
+                    if 'options' in q and q['options']:
+                        for opt in q['options']:
+                            st.markdown(f"&nbsp;&nbsp;&nbsp;{opt}")
+                    st.markdown("")
+                st.markdown("---")
+            
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                if st.button("📥 下载学生卷"):
+                    doc_buffer = create_word_document(
+                        st.session_state.paper_json, 
+                        with_answers=False,
+                        auto_draw=auto_draw
+                    )
+                    st.download_button(
+                        label="点击下载",
+                        data=doc_buffer,
+                        file_name=f"{grade_level}{subject}{paper_type}_学生卷.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="download_student"
+                    )
+            with col_dl2:
+                if st.button("📥 下载教师卷（含答案）"):
+                    doc_buffer = create_word_document(
+                        st.session_state.paper_json, 
+                        with_answers=True,
+                        auto_draw=auto_draw
+                    )
+                    st.download_button(
+                        label="点击下载",
+                        data=doc_buffer,
+                        file_name=f"{grade_level}{subject}{paper_type}_教师卷.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="download_teacher"
+                    )
