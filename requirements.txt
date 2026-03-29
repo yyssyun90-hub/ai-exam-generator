@@ -3,3 +3,6 @@ openai
 python-docx
 PyPDF2
 matplotlib
+PyMuPDF
+pdfplumber
+Pillow
