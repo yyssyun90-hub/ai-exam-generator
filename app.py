@@ -63,7 +63,7 @@ with st.sidebar:
         st.success("✅ GitHub Models API已配置")
         
         st.divider()
-        st.header("📊 免费额度")
+        st.header("📊 额度")
         
         remaining = get_remaining_calls()
         col1, col2 = st.columns(2)
@@ -183,7 +183,7 @@ with tab2:
         if not api_key:
             st.error("请先配置 API Key")
         elif get_remaining_calls() <= 0:
-            st.error("❌ 今日免费额度已用完，请明天再试")
+            st.error("❌ 今日额度已用完，请明天再试")
         else:
             with st.spinner("AI正在分析试卷风格..."):
                 track_api_call()
@@ -205,7 +205,7 @@ with tab3:
         
         if st.button("📝 生成试卷", type="primary", use_container_width=True):
             if get_remaining_calls() <= 0:
-                st.error("❌ 今日免费额度已用完，请明天再试")
+                st.error("❌ 今日额度已用完，请明天再试")
             elif not reference_papers:
                 st.error("请先上传参考试卷")
             else:
