@@ -30,9 +30,97 @@ if "today_calls" not in st.session_state:
     st.session_state.today_calls = 0
 if "last_reset_date" not in st.session_state:
     st.session_state.last_reset_date = datetime.now().strftime("%Y-%m-%d")
+if "selected_units" not in st.session_state:
+    st.session_state.selected_units = []
+if "extra_requirements" not in st.session_state:
+    st.session_state.extra_requirements = ""
+if "custom_prompt" not in st.session_state:
+    # 默认 Prompt 模板（你可以自由修改）
+    st.session_state.custom_prompt = """你是一位经验丰富的小学{subject}教师，请出一份{grade}{paper_type}试卷。
+
+【科目特点】
+- 华文：重点考察看拼音写字、组词、造句、阅读理解、看图写话
+- 数学：重点考察计算题、应用题、图形题、填空题
+- 健康教育：重点考察身体部位识别、食物分类、卫生习惯、安全知识
+
+【出题范围】
+只从以下内容出题：{unit_scope}
+
+【难度】
+{difficulty}
+
+【额外要求】
+{extra_requirements}
+
+【试卷风格参考】
+{style_str}
+
+【图片处理规则】
+1. 几何图形题 → 在题干前添加【自动绘图：图形描述】
+2. 复杂场景题 → 在题干前添加【图X：详细场景描述】
+3. 图片标记从【图1】开始递增
+
+请生成一份完整试卷，保持与风格参考相似的格式。
+题目要符合{grade}学生水平，语言生动有趣。
+
+输出JSON格式：
+{{
+    "title": "试卷标题",
+    "total_score": 总分,
+    "sections": [
+        {{
+            "type": "选择题",
+            "score_per_question": 每题分值,
+            "questions": [
+                {{
+                    "number": 1,
+                    "text": "题干",
+                    "image_marker": "",
+                    "image_type": "",
+                    "image_description": "",
+                    "options": ["A. xxx", "B. xxx", "C. xxx", "D. xxx"],
+                    "answer": "A",
+                    "explanation": "答案解析"
+                }}
+            ]
+        }},
+        {{
+            "type": "填空题",
+            "score_per_question": 每题分值,
+            "questions": [
+                {{
+                    "number": 1,
+                    "text": "题干",
+                    "image_marker": "",
+                    "image_type": "",
+                    "image_description": "",
+                    "answer": "答案",
+                    "explanation": "答案解析"
+                }}
+            ]
+        }},
+        {{
+            "type": "简答题/应用题",
+            "score_per_question": 每题分值,
+            "questions": [
+                {{
+                    "number": 1,
+                    "text": "题干",
+                    "image_marker": "",
+                    "image_type": "",
+                    "image_description": "",
+                    "answer": "参考答案",
+                    "explanation": "评分要点"
+                }}
+            ]
+        }}
+    ]
+}}
+
+只输出JSON，不要其他内容。"""
 
 st.title("📝 AI 智能出卷助手")
-st.caption("上传参考试卷和教学计划，AI学习风格后自动生成指定单元范围的试卷")
+st.caption("上传参考试卷和教学计划，AI学习风格后自动生成指定单元/课范围的试卷")
 
 
 # ========== 辅助函数 ==========
@@ -84,14 +172,16 @@ def get_remaining_calls():
 
 
 def extract_units_from_syllabus(syllabus_content, client):
+    """从教学计划中提取单元/课列表"""
     prompt = f"""
-请从以下教学计划中提取所有的单元/章节名称。
+请从以下教学计划中提取所有的单元/章节/课的名称。
 
 教学计划内容：
 {syllabus_content[:3000]}
 
-请以JSON数组格式输出，例如：
-["第1单元：认识数字", "第2单元：加减法", "第3单元：图形与几何"]
+请识别内容的层级结构，可能是"第X单元"或"第X课"。
+以JSON数组格式输出，例如：
+["第1单元：认识数字", "第2单元：加减法", "第3课：10以内的加法", "第4课：10以内的减法"]
 
 只输出JSON数组，不要其他内容。
 """
@@ -113,6 +203,7 @@ def extract_units_from_syllabus(syllabus_content, client):
 
 
 def analyze_paper_style(reference_files, client):
+    """分析试卷风格"""
     papers_content = []
     for file in reference_files:
         if file.name.endswith('.pdf'):
@@ -167,108 +258,37 @@ def analyze_paper_style(reference_files, client):
 
 
 def generate_paper(style, grade, subject, paper_type, difficulty, extra_requirements, 
-                   syllabus_content, selected_units, client, auto_draw=True):
+                   syllabus_content, selected_units, client, auto_draw=True, custom_prompt=""):
+    """生成试卷 - 使用自定义 Prompt"""
     if not client:
         return {"error": "API Key未配置"}
     
     style_str = json.dumps(style, ensure_ascii=False)
     units_str = "、".join(selected_units)
     
-    unit_content = f"\n【出题范围】请只从以下单元出题：{units_str}\n"
-    if syllabus_content:
-        unit_content += f"\n【教学计划参考】{syllabus_content[:2000]}\n"
+    # 如果没有自定义 Prompt，使用默认的
+    if not custom_prompt:
+        custom_prompt = st.session_state.custom_prompt
     
-    image_instruction = """
-【图片处理规则】
-1. 几何图形题 → 添加【自动绘图：图形描述】
-2. 复杂场景题 → 添加【图X：详细场景描述】
-3. 图片标记从【图1】开始递增
-"""
-    
-    prompt = f"""
-你是一位经验丰富的小学{subject}教师，请根据以下要求生成一份完整试卷。
-
-【年级】{grade}
-【科目】{subject}
-【试卷类型】{paper_type}
-【难度】{difficulty}
-
-【学习到的试卷风格】
-{style_str}
-
-{unit_content}
-
-【额外要求】
-{extra_requirements if extra_requirements else "无"}
-
-{image_instruction if auto_draw else ""}
-
-**重要：题目必须只覆盖以下单元：{units_str}。不要出这些单元以外的内容。**
-
-请生成一份完整试卷，保持与参考试卷相似的风格和格式，但题目内容必须完全不同。
-
-输出JSON格式：
-{{
-    "title": "试卷标题",
-    "total_score": 总分,
-    "sections": [
-        {{
-            "type": "选择题",
-            "score_per_question": 每题分值,
-            "questions": [
-                {{
-                    "number": 1,
-                    "text": "题干",
-                    "image_marker": "",
-                    "image_type": "",
-                    "image_description": "",
-                    "options": ["A. xxx", "B. xxx", "C. xxx", "D. xxx"],
-                    "answer": "A",
-                    "explanation": "答案解析"
-                }}
-            ]
-        }},
-        {{
-            "type": "填空题",
-            "score_per_question": 每题分值,
-            "questions": [
-                {{
-                    "number": 1,
-                    "text": "题干",
-                    "image_marker": "",
-                    "image_type": "",
-                    "image_description": "",
-                    "answer": "答案",
-                    "explanation": "答案解析"
-                }}
-            ]
-        }},
-        {{
-            "type": "简答题",
-            "score_per_question": 每题分值,
-            "questions": [
-                {{
-                    "number": 1,
-                    "text": "题干",
-                    "image_marker": "",
-                    "image_type": "",
-                    "image_description": "",
-                    "answer": "参考答案",
-                    "explanation": "评分要点"
-                }}
-            ]
-        }}
-    ]
-}}
-
-只输出JSON，不要其他内容。
-"""
+    # 替换变量
+    try:
+        prompt = custom_prompt.format(
+            subject=subject,
+            grade=grade,
+            paper_type=paper_type,
+            unit_scope=units_str,
+            difficulty=difficulty,
+            extra_requirements=extra_requirements if extra_requirements else "无",
+            style_str=style_str
+        )
+    except KeyError as e:
+        return {"error": f"Prompt模板中的变量 {e} 不被支持，请使用: subject, grade, paper_type, unit_scope, difficulty, extra_requirements, style_str"}
     
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "你是小学试卷出题专家，只输出JSON。"},
+                {"role": "system", "content": "你是小学试卷出题专家，只输出JSON。题目要符合小学水平，语言生动。"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -280,6 +300,7 @@ def generate_paper(style, grade, subject, paper_type, difficulty, extra_requirem
 
 
 def draw_geometry(description):
+    """根据描述绘制图形"""
     description = description.lower()
     
     fig, ax = plt.subplots(1, 1, figsize=(5, 4))
@@ -468,7 +489,6 @@ with st.sidebar:
     
     if "GITHUB_TOKEN" in st.secrets:
         api_key = st.secrets["GITHUB_TOKEN"]
-        # 创建新版 OpenAI 客户端
         client = OpenAI(
             api_key=api_key,
             base_url="https://models.inference.ai.azure.com"
@@ -516,10 +536,10 @@ with tab1:
     syllabus_file = st.file_uploader(
         "上传教学计划（Word格式）",
         type=["docx"],
-        help="AI会根据教学计划判断每个单元学什么"
+        help="AI会根据教学计划判断每个单元/课学什么"
     )
     
-    if syllabus_file and st.button("📖 解析教学计划，提取单元列表"):
+    if syllabus_file and st.button("📖 解析教学计划，提取单元/课列表"):
         if not client:
             st.error("请先配置 API Key")
         else:
@@ -531,8 +551,8 @@ with tab1:
                 units = extract_units_from_syllabus(syllabus_content, client)
                 st.session_state.syllabus_units = units
                 
-                st.success(f"成功提取 {len(units)} 个单元")
-                with st.expander("查看单元列表"):
+                st.success(f"成功提取 {len(units)} 个单元/课")
+                with st.expander("查看列表"):
                     for i, unit in enumerate(units, 1):
                         st.write(f"{i}. {unit}")
     
@@ -546,54 +566,96 @@ with tab2:
     with col1:
         grade_level = st.selectbox(
             "年级",
-            ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"]
+            ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"],
+            key="grade_level"
         )
-        subject = st.selectbox("科目", ["华文", "数学", "健康教育"])
+        subject = st.selectbox("科目", ["华文", "数学", "健康教育"], key="subject")
     
     with col2:
-        paper_type = st.selectbox("试卷类型", ["单元测验", "期中考试", "期末考试", "模拟练习"])
-        difficulty = st.select_slider("难度", ["简单", "中等偏易", "中等", "中等偏难", "难"], value="中等")
+        paper_type = st.selectbox("试卷类型", ["单元测验", "期中考试", "期末考试", "模拟练习"], key="paper_type")
+        difficulty = st.select_slider("难度", ["简单", "中等偏易", "中等", "中等偏难", "难"], value="中等", key="difficulty")
     
-    st.subheader("📚 出题范围（基于教学计划）")
+    # ========== 出题范围选择 ==========
+    st.subheader("📚 出题范围")
     
     if st.session_state.syllabus_units:
-        st.write("请勾选要出题的单元：")
-        
-        col_all1, col_all2 = st.columns(2)
-        with col_all1:
-            if st.button("✅ 全选"):
-                for unit in st.session_state.syllabus_units:
-                    st.session_state[f"unit_selected_{unit}"] = True
-        with col_all2:
-            if st.button("❌ 清空"):
-                for unit in st.session_state.syllabus_units:
-                    st.session_state[f"unit_selected_{unit}"] = False
+        st.write("请勾选要出题的单元或课：")
         
         selected_units = []
-        for unit in st.session_state.syllabus_units:
-            key = f"unit_selected_{unit}"
+        for item in st.session_state.syllabus_units:
+            key = f"scope_{item}"
             if key not in st.session_state:
-                st.session_state[key] = True
-            if st.checkbox(unit, key=key):
-                selected_units.append(unit)
+                st.session_state[key] = True  # 默认全选
+            if st.checkbox(item, key=key):
+                selected_units.append(item)
         
         st.session_state.selected_units = selected_units
         
         if selected_units:
-            st.success(f"已选择 {len(selected_units)} 个单元")
+            st.success(f"已选择 {len(selected_units)} 个内容")
         else:
-            st.warning("请至少选择一个单元")
+            st.warning("请至少选择一个单元或课")
     else:
         st.info("请先在「上传资料」标签页上传教学计划并点击「解析教学计划」")
         st.session_state.selected_units = []
     
-    st.subheader("📋 额外要求")
-    extra_requirements = st.text_area(
-        "特殊要求",
-        placeholder="例如：多出应用题、重点考察计算能力、多出看图写话题...",
-        height=100
+    # ========== 自定义 Prompt 模板 ==========
+    st.subheader("✏️ 自定义出题指令")
+    st.caption("你可以修改下面的模板，AI会按照你的要求出题。{科目}、{年级}等变量会被自动替换。")
+    
+    # 直接绑定 session_state
+    custom_prompt = st.text_area(
+        "出题指令模板",
+        value=st.session_state.custom_prompt,
+        height=300,
+        help="可用变量：{subject} {grade} {paper_type} {unit_scope} {difficulty} {extra_requirements} {style_str}",
+        key="custom_prompt_textarea"
     )
     
+    # 实时保存
+    if custom_prompt != st.session_state.custom_prompt:
+        st.session_state.custom_prompt = custom_prompt
+    
+    col_save, col_reset = st.columns(2)
+    with col_save:
+        if st.button("💾 保存当前模板"):
+            st.success("模板已保存！")
+    with col_reset:
+        if st.button("🔄 恢复默认模板"):
+            st.session_state.custom_prompt = """你是一位经验丰富的小学{subject}教师，请出一份{grade}{paper_type}试卷。
+
+【科目特点】
+- 华文：重点考察看拼音写字、组词、造句、阅读理解、看图写话
+- 数学：重点考察计算题、应用题、图形题、填空题
+- 健康教育：重点考察身体部位识别、食物分类、卫生习惯、安全知识
+
+【出题范围】
+只从以下内容出题：{unit_scope}
+
+【难度】
+{difficulty}
+
+【额外要求】
+{extra_requirements}
+
+【试卷风格参考】
+{style_str}
+
+请输出JSON格式，包含选择题、填空题、简答题/应用题。
+题目要符合{grade}学生水平，语言生动有趣。"""
+            st.rerun()
+    
+    # ========== 额外要求 ==========
+    st.subheader("📋 额外要求")
+    extra_requirements = st.text_area(
+        "这次出卷的特殊要求",
+        placeholder="例如：多出应用题、重点考察计算能力、多出看图写话题...",
+        height=80,
+        key="extra_requirements_input"
+    )
+    st.session_state.extra_requirements = extra_requirements
+    
+    # ========== 分析风格按钮 ==========
     if reference_papers and st.button("🔍 分析试卷风格", type="secondary"):
         if not client:
             st.error("请先配置 API Key")
@@ -609,11 +671,24 @@ with tab2:
                     st.json(style_analysis)
 
 with tab3:
+    # 确保必要变量存在
+    if "selected_units" not in st.session_state:
+        st.session_state.selected_units = []
+    if "analyzed_style" not in st.session_state:
+        st.session_state.analyzed_style = None
+    
     if not st.session_state.analyzed_style:
         st.info("请先在「上传资料」标签页上传参考试卷，并点击「分析试卷风格」")
     elif not st.session_state.selected_units:
-        st.info("请先在「出卷设置」标签页选择出题单元范围")
+        st.info("请先在「出卷设置」标签页选择出题范围（单元或课）")
     else:
+        # 获取最新的参数
+        grade_level = st.session_state.get("grade_level", "三年级")
+        subject = st.session_state.get("subject", "数学")
+        paper_type = st.session_state.get("paper_type", "单元测验")
+        difficulty = st.session_state.get("difficulty", "中等")
+        extra_requirements = st.session_state.get("extra_requirements", "")
+        
         st.subheader("🚀 生成新试卷")
         st.write(f"**出题范围：** {', '.join(st.session_state.selected_units)}")
         st.write(f"**学习风格来源：** {len(reference_papers) if reference_papers else 0} 份参考试卷")
@@ -636,7 +711,8 @@ with tab3:
                         syllabus_content=st.session_state.syllabus_content,
                         selected_units=st.session_state.selected_units,
                         client=client,
-                        auto_draw=auto_draw
+                        auto_draw=auto_draw,
+                        custom_prompt=st.session_state.custom_prompt
                     )
                     st.session_state.paper_json = paper
                     st.success("试卷生成成功！")
@@ -665,6 +741,11 @@ with tab3:
                             st.markdown(f"&nbsp;&nbsp;&nbsp;{opt}")
                     st.markdown("")
                 st.markdown("---")
+            
+            # 获取最新的年级、科目用于文件名
+            grade_level = st.session_state.get("grade_level", "三年级")
+            subject = st.session_state.get("subject", "数学")
+            paper_type = st.session_state.get("paper_type", "单元测验")
             
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
